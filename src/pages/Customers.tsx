@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Pencil, Search, Upload } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Customer } from '../types/customer';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 export function Customers() {
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -195,94 +195,92 @@ export function Customers() {
     if (!file) return;
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
-
-        // Obtener el último código existente
-        const { data: existingCustomers, error: fetchError } = await supabase
-          .from('customers')
-          .select('code')
-          .order('code', { ascending: false })
-          .limit(1);
-
-        if (fetchError) {
-          throw fetchError;
-        }
-
-        // Determinar el siguiente código
-        let lastNumber = 0;
-        if (existingCustomers && existingCustomers.length > 0) {
-          const lastCode = existingCustomers[0].code;
-          const match = lastCode.match(/CLI(\d+)/);
-          if (match) {
-            lastNumber = parseInt(match[1]);
-          }
-        }
-
-        // Validar y transformar datos
-        const customers = jsonData.map((row: any, index: number) => {
-          // Generar el siguiente código
-          lastNumber++;
-          const code = `CLI${String(lastNumber).padStart(3, '0')}`;
-
-          return {
-            code,
-            full_name: row.full_name,
-            rut: row.rut || null,
-            phone: row.phone?.toString(),
-            email: row.email,
-            street: row.street,
-            number: row.number?.toString(),
-            district: row.district,
-            city: row.city,
-            reference: row.reference,
-            type: row.type === 'business' ? 'business' : 'personal',
-            bottles_owned: parseInt(row.bottles_owned) || 0,
-            bottles_lent: parseInt(row.bottles_lent) || 0,
-            credit_limit: parseFloat(row.credit_limit) || 0,
-            contact: row.contact,
-            comments: row.comments
-          };
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await file.arrayBuffer());
+      const worksheet = workbook.worksheets[0];
+      
+      // Convertir el worksheet a JSON
+      const jsonData: any[] = [];
+      worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+        if (rowNumber === 1) return; // Skip header row
+        const rowData: any = {};
+        row.eachCell((cell, colNumber) => {
+          const header = worksheet.getRow(1).getCell(colNumber).value?.toString() || '';
+          rowData[header.toLowerCase()] = cell.value;
         });
+        jsonData.push(rowData);
+      });
 
-        // Validar datos requeridos
-        const invalidCustomers = customers.filter(
-          c => !c.full_name || !c.street || !c.number || !c.district || !c.city
-        );
+      // Obtener el último código existente
+      const { data: existingCustomers, error: fetchError } = await supabase
+        .from('customers')
+        .select('code')
+        .order('code', { ascending: false })
+        .limit(1);
 
-        if (invalidCustomers.length > 0) {
-          alert('Algunos clientes no tienen los campos requeridos completos. Por favor revisa el archivo.');
-          console.error('Clientes inválidos:', invalidCustomers);
-          return;
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      // Determinar el siguiente código
+      let lastNumber = 0;
+      if (existingCustomers && existingCustomers.length > 0) {
+        const lastCode = existingCustomers[0].code;
+        const match = lastCode.match(/CLI(\d+)/);
+        if (match) {
+          lastNumber = parseInt(match[1]);
         }
+      }
 
-        // Insertar clientes
-        const { error: insertError, data: insertedData } = await supabase
-          .from('customers')
-          .insert(customers)
-          .select();
+      // Validar y transformar datos
+      const customers = jsonData.map((row: any) => {
+        // Generar el siguiente código
+        lastNumber++;
+        const code = `CLI${String(lastNumber).padStart(3, '0')}`;
 
-        if (insertError) {
-          throw insertError;
-        }
+        return {
+          code,
+          full_name: row.full_name,
+          rut: row.rut || null,
+          phone: row.phone?.toString(),
+          email: row.email,
+          street: row.street,
+          number: row.number?.toString(),
+          district: row.district,
+          city: row.city,
+          reference: row.reference,
+          type: row.type === 'business' ? 'business' : 'personal',
+          bottles_owned: parseInt(row.bottles_owned) || 0,
+          bottles_lent: parseInt(row.bottles_lent) || 0,
+          credit_limit: parseFloat(row.credit_limit) || 0,
+          contact: row.contact,
+          comments: row.comments
+        };
+      });
 
-        alert(`${insertedData.length} clientes importados exitosamente`);
-        loadCustomers();
-      };
-      reader.readAsArrayBuffer(file);
+      // Validar datos requeridos
+      const invalidCustomers = customers.filter(
+        c => !c.full_name || !c.street || !c.number || !c.district || !c.city
+      );
+
+      if (invalidCustomers.length > 0) {
+        alert('Algunos clientes no tienen los campos requeridos completos. Por favor revisa el archivo.');
+        console.error('Clientes inválidos:', invalidCustomers);
+        return;
+      }
+
+      // Insertar clientes
+      const { error: insertError } = await supabase
+        .from('customers')
+        .insert(customers);
+
+      if (insertError) throw insertError;
+
+      alert('Clientes importados exitosamente');
+      loadCustomers();
     } catch (error) {
       console.error('Error al importar clientes:', error);
-      alert('Error al importar clientes. Por favor revisa la consola para más detalles.');
-    }
-
-    // Limpiar input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      alert('Error al importar clientes. Por favor revisa el formato del archivo.');
     }
   };
 
